@@ -1,14 +1,11 @@
-# main.py
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from typing import List, Dict, Any, cast
 from crud import create_order, get_orders
 from notifications.sms_utils import send_sms
-# Supabase + email helpers for order notifications
 from notifications.email_utils import insert_order_to_supabase, send_order_email
-# UltraMsg WhatsApp integration
 from ultramsg.ultramsg_utils import send_order_whatsapp
 from schemas import OrderOut, OrderCreated
 from notifications.notification_routes import router as notification_router
@@ -18,26 +15,23 @@ import os
 import requests
 from dotenv import load_dotenv
 
-
+# -----------------------------
+# App setup
+# -----------------------------
 app = FastAPI(
     title="Restaurant Backend API",
     description="FastAPI backend for restaurant order management with notifications",
     version="1.0.0"
 )
 
-# Load environment variables from .env (if present) as early as possible so
-# module-level config values read the correct environment.
+# Load environment variables early
 load_dotenv()
 
-# Configure CORS origins from environment variable for flexibility in different
-# environments. Set `BACKEND_ALLOW_ORIGINS` to a comma-separated list of origins
-# (e.g. "http://localhost:3000,https://example.com"). If not set, default to
-# the local Next.js dev URL.
+# -----------------------------
+# CORS setup
+# -----------------------------
 raw_allowed = os.getenv("BACKEND_ALLOW_ORIGINS", "http://localhost:3000")
-if raw_allowed.strip() == "*":
-    allowed_origins = ["*"]
-else:
-    allowed_origins = [o.strip() for o in raw_allowed.split(",") if o.strip()]
+allowed_origins = ["*"] if raw_allowed.strip() == "*" else [o.strip() for o in raw_allowed.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,18 +41,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# -----------------------------
 # Include notification routes
+# -----------------------------
 app.include_router(notification_router)
 
 logger = logging.getLogger("uvicorn.error")
 
+# -----------------------------
+# Default favicon (no file needed)
+# -----------------------------
+DEFAULT_FAVICON = b"""
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+  <rect width="16" height="16" fill="#4f46e5"/>
+  <text x="8" y="12" font-size="10" text-anchor="middle" fill="white">R</text>
+</svg>
+"""
 
+@app.get("/favicon.ico")
+async def favicon():
+    return Response(content=DEFAULT_FAVICON, media_type="image/svg+xml")
+
+# -----------------------------
+# Schemas
+# -----------------------------
 class OrderIn(BaseModel):
     name: str
     item: str
     phone: str
 
-
+# -----------------------------
+# Routes
+# -----------------------------
 @app.post("/order", response_model=OrderCreated, status_code=201)
 def post_order(payload: OrderIn) -> Dict[str, Any]:
     try:
@@ -67,28 +81,23 @@ def post_order(payload: OrderIn) -> Dict[str, Any]:
         logger.exception("Failed to create order")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    # Send SMS to owner or customer (non-blocking in production)
-    try:
-        send_sms("+92300xxxxxxx", f"New order: {order.item} from {order.name}")
-    except Exception:
-        # Log SMS delivery failure but do not fail the request
-        logger.exception("Failed to send SMS for order %s", getattr(order, "id", "?"))
+    owner_phone = os.getenv("ADMIN_PHONE_NUMBER")
+    if owner_phone:
+        try:
+            send_sms(owner_phone, f"New order: {order.item} from {order.name}")
+        except Exception:
+            logger.exception("Failed to send SMS for order %s", getattr(order, "id", "?"))
 
-    # Persist the order into Supabase `orders` table (best-effort). If Supabase
-    # save succeeds we also send an email notification and WhatsApp via UltraMsg.
     whatsapp_sent = False
     
     try:
         supa_result = insert_order_to_supabase(order)
         if supa_result.get("success"):
-            # Supabase insert succeeded - proceed with notifications
-            # Use the returned row representation to build the email
             try:
                 send_order_email(supa_result.get("row", {}))
             except Exception:
-                logger.exception("Failed to send email notification for order %s", getattr(order, "id", "?"))
+                logger.exception("Failed to send email for order %s", getattr(order, "id", "?"))
 
-            # Send WhatsApp notification via UltraMsg after successful Supabase insert
             try:
                 whatsapp_result = send_order_whatsapp(order)
                 if whatsapp_result.get("success"):
@@ -99,12 +108,10 @@ def post_order(payload: OrderIn) -> Dict[str, Any]:
             except Exception:
                 logger.exception("Unexpected error sending WhatsApp for order %s", getattr(order, "id", "?"))
         else:
-            # Supabase insert failed - still attempt to send WhatsApp as best-effort
             logger.warning("Supabase insert failed for order %s: %s", getattr(order, "id", "?"), supa_result.get("error"))
             try:
                 whatsapp_result = send_order_whatsapp(order)
                 if whatsapp_result.get("success"):
-                    # WhatsApp sent even though Supabase failed
                     whatsapp_sent = True
                     logger.info("WhatsApp sent but Supabase failed for order %s", getattr(order, "id", "?"))
             except Exception:
@@ -112,7 +119,6 @@ def post_order(payload: OrderIn) -> Dict[str, Any]:
     except Exception:
         logger.exception("Unexpected error while saving to Supabase or sending notification for order %s", getattr(order, "id", "?"))
 
-    # Build response: include notification status if WhatsApp was sent
     response: Dict[str, Any] = {"id": order.id, "status": "created"}
     if whatsapp_sent:
         response["notification"] = "success"
@@ -131,9 +137,10 @@ def list_orders() -> List[OrderOut]:
     return cast(List[OrderOut], orders)
 
 
-# OpenCage geocoding endpoint (returns formatted address for lat/lng)
-OPENCAGE_KEY = os.getenv("OPENCAGE_KEY", "YOUR_OPENCAGE_API_KEY")
-
+# -----------------------------
+# OpenCage geocoding
+# -----------------------------
+OPENCAGE_KEY = os.getenv("OPENCAGE_KEY")
 
 @app.get("/get-address")
 def get_address(lat: float, lng: float):
@@ -157,6 +164,9 @@ def get_address(lat: float, lng: float):
     return {"address": address}
 
 
+# -----------------------------
+# Exception handlers
+# -----------------------------
 @app.exception_handler(SQLAlchemyError)
 def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
     logger.exception("Database error: %s", exc)
