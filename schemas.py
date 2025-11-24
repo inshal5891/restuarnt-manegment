@@ -12,8 +12,9 @@ class OrderOut(BaseModel):
     status: str
     created_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = {
+        "from_attributes": True
+    }
 
 
 class OrderCreated(BaseModel):
@@ -57,5 +58,6 @@ class OrderDetail(BaseModel):
     total: Optional[Decimal] = None
     created_at: Optional[datetime] = None
 
-    class Config:
-        orm_mode = True
+    model_config = {
+        "from_attributes": True
+    }
