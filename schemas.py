@@ -13,7 +13,7 @@ class OrderOut(BaseModel):
     created_at: Optional[datetime]
 
     model_config = {
-        "orm_mode": True
+      'from_attributes': True
     }
 
 
@@ -61,6 +61,7 @@ class OrderDetail(BaseModel):
     model_config = {
         'from_attributes' : True
     }
+
 
 
 
