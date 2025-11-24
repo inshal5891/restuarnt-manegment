@@ -59,7 +59,8 @@ class OrderDetail(BaseModel):
     created_at: Optional[datetime] = None
 
     model_config = {
-         'orm_mode': True
+        'from_attributes' : True
     }
+
 
 
